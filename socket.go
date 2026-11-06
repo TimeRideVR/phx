@@ -40,11 +40,17 @@ type Socket struct {
 	Serializer Serializer
 
 	// miscellaneous private members
-	refGenerator     *atomicRef
+	refGenerator *atomicRef
+
+	// callbacks and channels are used by the transport's goroutines while user code registers and removes them, so
+	// each registry has its own lock. Callbacks and channels are always copied out before they are invoked, never
+	// called with a lock held.
+	callbacksMu      sync.RWMutex
 	openCallbacks    map[Ref]func()
 	closeCallbacks   map[Ref]func()
 	errorCallbacks   map[Ref]func(error)
 	messageCallbacks map[Ref]func(Message)
+	channelsMu       sync.RWMutex
 	channels         map[string]*Channel
 
 	// heartbeat related state, guarded by hbMu. hbClose and hbMsg belong to the heartbeat goroutine of the current
@@ -183,6 +189,8 @@ func (s *Socket) MakeRef() Ref {
 // Returns a unique Ref that can be used to cancel this callback via Off.
 func (s *Socket) OnOpen(callback func()) Ref {
 	ref := s.MakeRef()
+	s.callbacksMu.Lock()
+	defer s.callbacksMu.Unlock()
 	s.openCallbacks[ref] = callback
 	return ref
 }
@@ -191,6 +199,8 @@ func (s *Socket) OnOpen(callback func()) Ref {
 // Returns a unique Ref that can be used to cancel this callback via Off.
 func (s *Socket) OnClose(callback func()) Ref {
 	ref := s.MakeRef()
+	s.callbacksMu.Lock()
+	defer s.callbacksMu.Unlock()
 	s.closeCallbacks[ref] = callback
 	return ref
 }
@@ -199,6 +209,8 @@ func (s *Socket) OnClose(callback func()) Ref {
 // Returns a unique Ref that can be used to cancel this callback via Off.
 func (s *Socket) OnError(callback func(error)) Ref {
 	ref := s.MakeRef()
+	s.callbacksMu.Lock()
+	defer s.callbacksMu.Unlock()
 	s.errorCallbacks[ref] = callback
 	return ref
 }
@@ -207,66 +219,55 @@ func (s *Socket) OnError(callback func(error)) Ref {
 // Returns a unique Ref that can be used to cancel this callback via Off.
 func (s *Socket) OnMessage(callback func(Message)) Ref {
 	ref := s.MakeRef()
+	s.callbacksMu.Lock()
+	defer s.callbacksMu.Unlock()
 	s.messageCallbacks[ref] = callback
 	return ref
 }
 
 // Off cancels the given callback from being called.
 func (s *Socket) Off(ref Ref) {
-	_, ok := s.openCallbacks[ref]
-	if ok {
-		delete(s.openCallbacks, ref)
-		return
-	}
+	s.callbacksMu.Lock()
+	defer s.callbacksMu.Unlock()
 
-	_, ok = s.closeCallbacks[ref]
-	if ok {
-		delete(s.closeCallbacks, ref)
-		return
-	}
-
-	_, ok = s.errorCallbacks[ref]
-	if ok {
-		delete(s.errorCallbacks, ref)
-		return
-	}
-
-	_, ok = s.messageCallbacks[ref]
-	if ok {
-		delete(s.messageCallbacks, ref)
-		return
-	}
+	delete(s.openCallbacks, ref)
+	delete(s.closeCallbacks, ref)
+	delete(s.errorCallbacks, ref)
+	delete(s.messageCallbacks, ref)
 }
 
 // Channel creates a new instance of phx.Channel, or returns an existing instance if it had already been created.
 func (s *Socket) Channel(topic string, params map[string]string) *Channel {
-	channel, exists := s.channels[topic]
-	if exists {
-		return channel
-	} else {
-		channel := NewChannel(topic, params, s)
-		return channel
-	}
+	return NewChannel(topic, params, s)
 }
 
-func (s *Socket) hasChannel(topic string) bool {
-	_, exists := s.channels[topic]
-	return exists
-}
-
-func (s *Socket) getChannel(topic string) (*Channel, bool) {
-	channel, exists := s.channels[topic]
-	return channel, exists
-}
-
-func (s *Socket) addChannel(channel *Channel) {
+// addChannelLocked registers the channel. The caller holds channelsMu.
+func (s *Socket) addChannelLocked(channel *Channel) {
 	s.channels[channel.topic] = channel
 	s.Logger.Printf(LogDebug, "socket", "Added channel '%v'. Open channels: %v", channel.topic, len(s.channels))
 }
 
 func (s *Socket) removeChannel(channel *Channel) {
-	delete(s.channels, channel.topic)
+	s.channelsMu.Lock()
+	defer s.channelsMu.Unlock()
+
+	// A newer Channel may have been created for the topic since this one was orphaned: leave that one alone.
+	if s.channels[channel.topic] == channel {
+		delete(s.channels, channel.topic)
+	}
 	s.Logger.Printf(LogDebug, "socket", "Removed channel '%v'. Open channels: %v", channel.topic, len(s.channels))
+}
+
+// channelList returns a copy of the open channels, to iterate without holding the lock.
+func (s *Socket) channelList() []*Channel {
+	s.channelsMu.RLock()
+	defer s.channelsMu.RUnlock()
+
+	channels := make([]*Channel, 0, len(s.channels))
+	for _, channel := range s.channels {
+		channels = append(channels, channel)
+	}
+	return channels
 }
 
 // implements TransportHandler
@@ -278,7 +279,13 @@ func (s *Socket) reconnectAfter(tries int) time.Duration {
 func (s *Socket) onConnOpen() {
 	s.Logger.Printf(LogInfo, "socket", "Connected to %v", s.EndPoint)
 	s.startHeartbeat()
+	s.callbacksMu.RLock()
+	callbacks := make([]func(), 0, len(s.openCallbacks))
 	for _, cb := range s.openCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	s.callbacksMu.RUnlock()
+	for _, cb := range callbacks {
 		go cb()
 	}
 }
@@ -286,13 +293,25 @@ func (s *Socket) onConnOpen() {
 func (s *Socket) onConnClose() {
 	s.Logger.Printf(LogInfo, "socket", "Disconnected from %v", s.EndPoint)
 	s.stopHeartbeat()
+	s.callbacksMu.RLock()
+	callbacks := make([]func(), 0, len(s.closeCallbacks))
 	for _, cb := range s.closeCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	s.callbacksMu.RUnlock()
+	for _, cb := range callbacks {
 		go cb()
 	}
 }
 
 func (s *Socket) callErrorCallbacks(err error) {
+	s.callbacksMu.RLock()
+	callbacks := make([]func(error), 0, len(s.errorCallbacks))
 	for _, cb := range s.errorCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	s.callbacksMu.RUnlock()
+	for _, cb := range callbacks {
 		go cb(err)
 	}
 }
@@ -340,11 +359,17 @@ func (s *Socket) onConnMessage(data []byte) {
 		}
 	}
 
+	s.callbacksMu.RLock()
+	callbacks := make([]func(Message), 0, len(s.messageCallbacks))
 	for _, cb := range s.messageCallbacks {
+		callbacks = append(callbacks, cb)
+	}
+	s.callbacksMu.RUnlock()
+	for _, cb := range callbacks {
 		go cb(*msg)
 	}
 
-	for _, channel := range s.channels {
+	for _, channel := range s.channelList() {
 		channel.process(msg)
 	}
 }
