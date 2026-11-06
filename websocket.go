@@ -230,10 +230,13 @@ func (w *Websocket) closeConn() {
 	w.Handler.onConnClose()
 }
 
+// errConnNotOpen is returned when there is no connection that is ready for use.
+var errConnNotOpen = errors.New("connection is not open")
+
 func (w *Websocket) writeToConn(data []byte) error {
 	conn := w.readyConn()
 	if conn == nil {
-		return errors.New("connection is not open")
+		return errConnNotOpen
 	}
 
 	return conn.WriteMessage(websocket.TextMessage, data)
@@ -242,7 +245,7 @@ func (w *Websocket) writeToConn(data []byte) error {
 func (w *Websocket) readFromConn() ([]byte, error) {
 	conn := w.readyConn()
 	if conn == nil {
-		return nil, errors.New("connection is not open")
+		return nil, errConnNotOpen
 	}
 
 	messageType, data, err := conn.ReadMessage()
@@ -307,6 +310,10 @@ func (w *Websocket) connectionWriter() {
 	//fmt.Println("connectionWriter started")
 	//defer fmt.Println("connectionWriter stopped")
 
+	// pending is a message already taken off the queue that could not be written yet because the connection was not
+	// ready. It is kept, never dropped, and written first once the connection is ready again.
+	var pending []byte
+
 	for {
 		// Check if we have been told to finish
 		select {
@@ -320,26 +327,39 @@ func (w *Websocket) connectionWriter() {
 			continue
 		}
 
-		select {
-		case <-w.done:
-			return
-		case data := <-w.send:
-			// If there is a message to send, but we're not connected, then wait until we are.
-			if !w.connIsReady() {
-				time.Sleep(busyWait)
-				continue
+		if pending == nil {
+			select {
+			case <-w.done:
+				return
+			case pending = <-w.send:
 			}
+		}
 
-			// Send the message
-			err := w.writeToConn(data)
+		// The connection may have stopped being ready while we waited for a message.
+		if !w.connIsReady() {
+			time.Sleep(busyWait)
+			continue
+		}
 
-			// If there were any errors sending, then tell the connectionManager to reconnect
-			if err != nil {
-				w.Handler.onWriteError(err)
-				w.sendReconnect()
-				time.Sleep(busyWait)
-				continue
-			}
+		// Send the message
+		data := pending
+		pending = nil
+		err := w.writeToConn(data)
+
+		if errors.Is(err, errConnNotOpen) {
+			// Nothing was written, so keep the message for the next connection.
+			pending = data
+			time.Sleep(busyWait)
+			continue
+		}
+
+		// If there were any other errors sending, then tell the connectionManager to reconnect. The message may
+		// have been partly written, so it is not sent again.
+		if err != nil {
+			w.Handler.onWriteError(err)
+			w.sendReconnect()
+			time.Sleep(busyWait)
+			continue
 		}
 	}
 }
