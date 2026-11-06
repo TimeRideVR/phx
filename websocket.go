@@ -33,9 +33,12 @@ type Websocket struct {
 	waitingForClose bool
 }
 
+// NewWebsocket creates a Websocket with its own copy of websocket.DefaultDialer, so configuring its Dialer (a proxy,
+// subprotocols, TLS settings) affects only this Websocket and never the rest of the process.
 func NewWebsocket(handler TransportHandler) *Websocket {
+	dialer := *websocket.DefaultDialer
 	return &Websocket{
-		Dialer:  websocket.DefaultDialer,
+		Dialer:  &dialer,
 		Handler: handler,
 	}
 }
@@ -177,8 +180,10 @@ func (w *Websocket) shutdown() {
 }
 
 func (w *Websocket) dial() error {
-	w.Dialer.HandshakeTimeout = w.connectTimeout
-	conn, _, err := w.Dialer.Dial(w.endPoint.String(), w.requestHeader)
+	// Dial with a copy, so the timeout never gets written to a Dialer the caller supplied.
+	dialer := *w.Dialer
+	dialer.HandshakeTimeout = w.connectTimeout
+	conn, _, err := dialer.Dial(w.endPoint.String(), w.requestHeader)
 	if err != nil {
 		return err
 	}
