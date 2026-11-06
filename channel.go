@@ -56,8 +56,11 @@ type Channel struct {
 // NewChannel creates a new Channel attached to the Socket. If there is already a Channel for the given topic, that
 // channel is returned instead of creating a new one.
 func NewChannel(topic string, params map[string]string, socket *Socket) *Channel {
-	channel, exists := socket.getChannel(topic)
-	if exists {
+	// Check, create and register under one lock, so concurrent callers get the same Channel for a topic.
+	socket.channelsMu.Lock()
+	defer socket.channelsMu.Unlock()
+
+	if channel, exists := socket.channels[topic]; exists {
 		return channel
 	}
 
@@ -109,7 +112,7 @@ func NewChannel(topic string, params map[string]string, socket *Socket) *Channel
 	}))
 
 	// Add this channel to the socket's open channel
-	socket.addChannel(c)
+	socket.addChannelLocked(c)
 
 	return c
 }
@@ -242,7 +245,7 @@ func (c *Channel) Push(event string, payload any) (*Push, error) {
 	if c.IsRemoved() {
 		return nil, fmt.Errorf("channel removed, create a new Channel")
 	}
-	if c.joinPush == nil {
+	if c.getJoinPush() == nil {
 		return nil, fmt.Errorf("cannot push before calling Join")
 	}
 

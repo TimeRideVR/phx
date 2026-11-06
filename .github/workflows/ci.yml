@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main, timeride]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build-minimum:
+    name: Build on the minimum supported Go
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.18"
+      - run: go build ./...
+
+  test:
+    name: Test (Go ${{ matrix.go }})
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        go: ["oldstable", "stable"]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: ${{ matrix.go }}
+      - run: go vet ./...
+      - run: go test -race -count=1 ./...
+
+  vulncheck:
+    name: govulncheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
