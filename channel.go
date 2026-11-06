@@ -120,6 +120,12 @@ func (c *Channel) Join() (*Push, error) {
 	if c.IsRemoved() {
 		return nil, fmt.Errorf("channel removed, create a new Channel")
 	}
+	if c.IsJoined() {
+		return nil, fmt.Errorf("already joined")
+	}
+	if c.IsJoining() {
+		return nil, fmt.Errorf("join already in progress")
+	}
 	if !c.socket.IsConnectedOrConnecting() {
 		return nil, fmt.Errorf("cannot join before connecting the socket")
 	}
@@ -127,6 +133,7 @@ func (c *Channel) Join() (*Push, error) {
 	// Set the join push and the joining state in one step, so the socket's OnOpen hook cannot rejoin in between.
 	joinPush := NewPush(c, string(JoinEvent), c.params, c.PushTimeout)
 	c.mu.Lock()
+	// Repeat the check under the lock, in case another goroutine joined since the check above.
 	switch c.state {
 	case ChannelJoined:
 		c.mu.Unlock()
