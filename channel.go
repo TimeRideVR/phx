@@ -76,13 +76,8 @@ func NewChannel(topic string, params map[string]string, socket *Socket) *Channel
 		socketCallbacks: make([]Ref, 0, 2),
 	}
 
-	c.rejoinTimer = newCallbackTimer(c.rejoin, c.RejoinAfterFunc)
-
-	c.onInternal(string(CloseEvent), func(payload any) {
-		c.socket.Logger.Printf(LogInfo, "channel", "Channel '%v' closed. joinRef: %v", c.topic, c.JoinRef())
-		c.setState(ChannelClosed)
-		c.rejoinTimer.Reset()
-	})
+	// Look RejoinAfterFunc up on every call: users assign it after NewChannel returned.
+	c.rejoinTimer = newCallbackTimer(c.rejoin, func(tries int) time.Duration { return c.RejoinAfterFunc(tries) })
 
 	c.onInternal(string(ErrorEvent), func(payload any) {
 		c.socket.Logger.Printf(LogError, "channel", "Channel '%v' error: %+v", c.topic, payload)
@@ -200,11 +195,11 @@ func (c *Channel) Leave() (*Push, error) {
 	leavePush := NewPush(c, string(LeaveEvent), c.params, c.PushTimeout)
 	leavePush.Receive("ok", func(response any) {
 		c.socket.Logger.Printf(LogInfo, "channel", "left channel '%v'", c.topic)
-		c.trigger(string(CloseEvent), 0, "leave")
+		c.closeChannel("leave")
 	})
 	leavePush.Receive("error", func(response any) {
 		c.socket.Logger.Printf(LogError, "channel", "error leaving channel '%v': %v", c.topic, response)
-		c.trigger(string(CloseEvent), 0, "leave")
+		c.closeChannel("leave")
 	})
 	leavePush.Receive("timeout", func(response any) {
 		c.socket.Logger.Printf(LogError, "channel", "timeout leaving channel '%v'", c.topic)
@@ -217,7 +212,7 @@ func (c *Channel) Leave() (*Push, error) {
 		}
 	} else {
 		// If we're not connected, there is no channel on the server to leave, so just mark us left
-		c.setState(ChannelClosed)
+		c.closeChannel("leave")
 		leavePush.trigger("ok", "leave")
 	}
 
@@ -387,8 +382,30 @@ func (c *Channel) process(msg *Message) {
 		return
 	}
 
+	if msg.Event == string(CloseEvent) {
+		c.closeChannel(msg.Payload)
+		return
+	}
+
 	// Trigger bindings with this event
 	c.trigger(msg.Event, msg.Ref, msg.Payload)
+}
+
+// closeChannel closes the Channel and runs the OnClose callbacks, once. A Channel is closed both by its own leave
+// being acknowledged and by the phx_close that Phoenix sends after that, and whichever comes first closes it: the
+// other finds it closed already and does nothing.
+func (c *Channel) closeChannel(payload any) {
+	c.mu.Lock()
+	if c.state == ChannelClosed || c.state == ChannelRemoved {
+		c.mu.Unlock()
+		return
+	}
+	c.state = ChannelClosed
+	c.mu.Unlock()
+
+	c.socket.Logger.Printf(LogInfo, "channel", "Channel '%v' closed. joinRef: %v", c.topic, c.JoinRef())
+	c.rejoinTimer.Reset()
+	c.trigger(string(CloseEvent), 0, payload)
 }
 
 // trigger calls all bindings (callbacks) that are interested in this event. For bindings that have also given us a
