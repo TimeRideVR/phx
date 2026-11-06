@@ -28,6 +28,9 @@ type testServer struct {
 	mu         sync.Mutex
 	silent     bool
 	heartbeats int
+
+	// closeAfterLeave makes the server send phx_close after the reply to a phx_leave, as Phoenix does.
+	closeAfterLeave bool
 }
 
 // testConn is the server side of one client connection.
@@ -100,6 +103,13 @@ func (s *testServer) setSilent(silent bool) {
 	s.silent = silent
 }
 
+// setCloseAfterLeave makes the server follow the reply to every phx_leave with a phx_close, as Phoenix does.
+func (s *testServer) setCloseAfterLeave(on bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.closeAfterLeave = on
+}
+
 func (s *testServer) heartbeatCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -142,8 +152,16 @@ func (s *testServer) serve(c *testConn) {
 			s.heartbeats++
 			s.mu.Unlock()
 			_ = c.reply(f, "ok", map[string]any{})
-		case string(JoinEvent), string(LeaveEvent):
+		case string(JoinEvent):
 			_ = c.reply(f, "ok", map[string]any{})
+		case string(LeaveEvent):
+			_ = c.reply(f, "ok", map[string]any{})
+			s.mu.Lock()
+			closeAfterLeave := s.closeAfterLeave
+			s.mu.Unlock()
+			if closeAfterLeave {
+				_ = c.send(testFrame{JoinRef: f.JoinRef, Ref: f.JoinRef, Topic: f.Topic, Event: string(CloseEvent), Payload: map[string]any{}})
+			}
 		default:
 			c.frames <- f
 		}
