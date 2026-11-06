@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gorilla/websocket"
+	"net"
 	"net/http"
 	"net/url"
 	"path"
@@ -219,8 +220,9 @@ func (w *Websocket) closeConn() {
 
 	// The reader may have dropped the connection while we waited, so look again.
 	if conn := w.getConn(); conn != nil {
+		// The reader may have closed the connection already after a read error.
 		err := conn.Close()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			w.Handler.onConnError(err)
 		}
 
@@ -242,21 +244,23 @@ func (w *Websocket) writeToConn(data []byte) error {
 	return conn.WriteMessage(websocket.TextMessage, data)
 }
 
-func (w *Websocket) readFromConn() ([]byte, error) {
+// readFromConn reads the next message. It also returns the connection it read from, so that the caller deals with
+// that very connection when the read fails, even if a new one has been dialed since.
+func (w *Websocket) readFromConn() (*websocket.Conn, []byte, error) {
 	conn := w.readyConn()
 	if conn == nil {
-		return nil, errConnNotOpen
+		return nil, nil, errConnNotOpen
 	}
 
 	messageType, data, err := conn.ReadMessage()
 	if err != nil {
-		return nil, err
+		return conn, nil, err
 	}
 	if messageType != websocket.TextMessage {
-		return nil, errors.New(fmt.Sprint("Got unsupported websocket message type", messageType))
+		return conn, nil, errors.New(fmt.Sprint("Got unsupported websocket message type ", messageType))
 	}
 
-	return data, nil
+	return conn, data, nil
 }
 
 func (w *Websocket) connectionManager() {
@@ -384,7 +388,7 @@ func (w *Websocket) connectionReader() {
 		}
 
 		// Read the next message from the websocket. This blocks until there is a message or error
-		data, err := w.readFromConn()
+		conn, data, err := w.readFromConn()
 
 		// If there were any errors, tell the connectionManager to reconnect
 		if err != nil {
@@ -398,7 +402,12 @@ func (w *Websocket) connectionReader() {
 				}
 			} else {
 				w.Handler.onReadError(err)
-				w.setConn(nil)
+				// The connection is dead: close it, so it does not hold its socket until garbage collection, and
+				// forget it unless a newer connection has replaced it already.
+				if conn != nil {
+					_ = conn.Close()
+					w.clearConn(conn)
+				}
 				w.sendReconnect()
 			}
 
@@ -493,6 +502,16 @@ func (w *Websocket) setConn(conn *websocket.Conn) {
 	defer w.mu.Unlock()
 
 	w.conn = conn
+}
+
+// clearConn forgets conn, unless a newer connection has replaced it in the meantime.
+func (w *Websocket) clearConn(conn *websocket.Conn) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+
+	if w.conn == conn {
+		w.conn = nil
+	}
 }
 
 // getConn returns the current connection, or nil. The connection is read under the mutex, but used outside it:
