@@ -8,9 +8,6 @@ import (
 	"time"
 )
 
-// quick toggle while debugging
-const startHeartbeat = true
-
 // A Socket represents a connection to the server via the given Transport. Many Channels can be connected over a single
 // Socket.
 type Socket struct {
@@ -387,9 +384,7 @@ func (s *Socket) startHeartbeat() {
 	s.hbRef = 0
 	s.hbMu.Unlock()
 
-	if startHeartbeat {
-		go s.heartbeat(hbClose, hbMsg)
-	}
+	go s.heartbeat(hbClose, hbMsg)
 }
 
 func (s *Socket) stopHeartbeat() {

@@ -28,7 +28,6 @@ func (s *JSONSerializerV1) encode(msg *Message) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Printf("encode: %+v -> %s\n", msg, data)
 	return data, nil
 }
 
@@ -38,7 +37,6 @@ func (s *JSONSerializerV1) decode(data []byte) (*Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Printf("decode: %s -> %+v\n", data, msg)
 	return &msg, nil
 }
 
@@ -61,7 +59,6 @@ func (s *JSONSerializerV2) encode(msg *Message) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Printf("encode: %+v -> %s\n", msg, data)
 	return data, nil
 }
 
@@ -72,12 +69,10 @@ func (s *JSONSerializerV2) decode(data []byte) (*Message, error) {
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Printf("decode: %s -> %#v\n", data, tmp)
 	msg, err := jm.Message()
 	if err != nil {
 		return nil, err
 	}
 
-	//fmt.Printf("decode: %s -> %+v\n", data, msg)
 	return msg, nil
 }

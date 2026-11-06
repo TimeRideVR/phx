@@ -27,18 +27,15 @@ type Message struct {
 }
 
 func (m Message) MarshalJSON() ([]byte, error) {
-	//fmt.Printf("Message.MarshalJSON %+v\n", m)
 	jsonMessage := NewJSONMessage(m)
 	data, err := json.Marshal(jsonMessage)
 	if err != nil {
 		return nil, err
 	}
-	//fmt.Printf("Message.MarshalJSON %+v -> %s\n", m, data)
 	return data, nil
 }
 
 func (m *Message) UnmarshalJSON(data []byte) error {
-	//fmt.Printf("Message.UnMarshalJSON %s\n", data)
 	var jm JSONMessage
 	err := json.Unmarshal(data, &jm)
 	if err != nil {
@@ -50,7 +47,6 @@ func (m *Message) UnmarshalJSON(data []byte) error {
 	}
 	// make a copy
 	*m = *msg
-	//fmt.Printf("Message.UnMarshalJSON %s -> %+v\n", data, m)
 	return nil
 }
 
@@ -77,7 +73,6 @@ func NewJSONMessage(msg Message) *JSONMessage {
 }
 
 func (jm *JSONMessage) Message() (*Message, error) {
-	//fmt.Printf("JSONMessage.Message: %#v\n", jm)
 	joinRef, err := ParseRef(jm.JoinRef)
 	if err != nil {
 		return nil, err

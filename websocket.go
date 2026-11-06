@@ -173,7 +173,6 @@ func (w *Websocket) shutdown() {
 // shutdownSession ends the current session. With a non-nil done it only does so if that is still the current
 // session's channel, so a goroutine of an earlier session cannot end the session that replaced it.
 func (w *Websocket) shutdownSession(done chan any) {
-	//fmt.Println("shutdown")
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
@@ -239,8 +238,6 @@ func (w *Websocket) dial(done chan any) error {
 		return errSessionEnded
 	}
 	w.mu.Unlock()
-	//w.socket.Logger.Debugf("Connected conn: %+v\n\n", conn)
-	//w.socket.Logger.Debugf("Connected resp: %+v\n", resp)
 
 	w.setConn(conn)
 	w.setReconnecting(false)
@@ -250,7 +247,6 @@ func (w *Websocket) dial(done chan any) error {
 }
 
 func (w *Websocket) closeConn(closeMsg <-chan bool) {
-	//fmt.Println("closeConn")
 
 	if conn := w.getConn(); conn != nil {
 		// attempt to gracefully close the connection by sending a close websocket message
@@ -320,7 +316,6 @@ func (w *Websocket) readFromConn() (*websocket.Conn, []byte, error) {
 }
 
 func (w *Websocket) connectionManager(done chan any, closeReq, reconnectReq, closeMsg chan bool) {
-	//fmt.Println("connectionManager started")
 	//defer fmt.Println("connectionManager stopped")
 
 	// closedByReconnect is set when a reconnect has closed the connection and no new one has been dialed since. A
@@ -371,7 +366,6 @@ func (w *Websocket) connectionManager(done chan any, closeReq, reconnectReq, clo
 }
 
 func (w *Websocket) connectionWriter(done chan any, send chan []byte) {
-	//fmt.Println("connectionWriter started")
 	//defer fmt.Println("connectionWriter stopped")
 
 	// pending is a message already taken off the queue that could not be written yet because the connection was not
@@ -429,14 +423,12 @@ func (w *Websocket) connectionWriter(done chan any, send chan []byte) {
 }
 
 func (w *Websocket) connectionReader(done chan any, closeMsg chan bool) {
-	//fmt.Println("connectionReader started")
 	//defer fmt.Println("connectionReader stopped")
 
 	for {
 		// Check if we have been told to finish
 		select {
 		case <-done:
-			//fmt.Println("connectionReader stopping")
 			return
 		default:
 		}
@@ -462,7 +454,6 @@ func (w *Websocket) connectionReader(done chan any, closeMsg chan bool) {
 			default:
 			}
 
-			//fmt.Printf("read error %e %v\n", err, err)
 			if websocket.IsCloseError(err, 1000) && w.isWaitingForClose() {
 				// tell the connectionManager that we got the close message
 				select {

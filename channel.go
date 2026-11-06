@@ -245,7 +245,7 @@ func (c *Channel) Push(event string, payload any) (*Push, error) {
 	if c.IsRemoved() {
 		return nil, fmt.Errorf("channel removed, create a new Channel")
 	}
-	if c.joinPush == nil {
+	if c.getJoinPush() == nil {
 		return nil, fmt.Errorf("cannot push before calling Join")
 	}
 

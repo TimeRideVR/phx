@@ -85,6 +85,8 @@ func (c ChannelState) String() string {
 		return "joining"
 	case ChannelLeaving:
 		return "leaving"
+	case ChannelRemoved:
+		return "removed"
 	}
 	return "unknown"
 }

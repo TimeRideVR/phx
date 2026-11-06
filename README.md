@@ -11,11 +11,30 @@
 >   runs a channel's event callbacks one at a time in arrival order.
 > - [fix-heartbeat-race](https://github.com/TimeRideVR/phx/tree/fix-heartbeat-race): no data race or panic between
 >   heartbeat goroutines across reconnects.
+> - Concurrency and lifecycle fixes found in a code review: the Socket's channel and callback registries are
+>   synchronised; a Websocket no longer mutates the process-wide `websocket.DefaultDialer`; the writer no longer drops
+>   a message it could not send yet; a connection that failed a read is closed; a `Disconnect` followed by `Connect`
+>   no longer leaves goroutines of the old session running; `gorilla/websocket` is updated to v1.5.3 (GO-2026-6278).
 > - [nshafer/phx#6](https://github.com/nshafer/phx/pull/6): fix dangling bindings due to timed out Push calls.
 > - [nshafer/phx#8](https://github.com/nshafer/phx/pull/8): fix "send on closed channel" panic when shutdown races
 >   internal signalling.
 
-[![Go Reference](https://pkg.go.dev/badge/github.com/nshafer/phx.svg)](https://pkg.go.dev/github.com/nshafer/phx) [![Static Badge](https://img.shields.io/badge/changelog-blue)](https://github.com/nshafer/phx/releases)
+[![CI](https://github.com/TimeRideVR/phx/actions/workflows/ci.yml/badge.svg)](https://github.com/TimeRideVR/phx/actions/workflows/ci.yml) [![Go Reference](https://pkg.go.dev/badge/github.com/TimeRideVR/phx.svg)](https://pkg.go.dev/github.com/TimeRideVR/phx) [![Static Badge](https://img.shields.io/badge/changelog-blue)](https://github.com/TimeRideVR/phx/releases)
+
+## How the changes in this fork were made
+
+**Everything this fork changed since it was forked from nshafer/phx was implemented with AI tools** (Claude Code).
+That covers the fixes listed above and every commit on the `timeride` branch and its fix branches; commits made this
+way carry a `Co-Authored-By: Claude` trailer. The code up to that point is nshafer's.
+
+What that means for you as a consumer:
+
+- Each fix comes with tests that fail without it, and the suite runs with the race detector in CI, together with
+  `go vet` and `govulncheck`.
+- The tests run against a small in-process stand-in for a Phoenix server, not against a real Phoenix application, so
+  protocol behaviour is checked against the Phoenix JavaScript client's source and documentation, not live.
+- This is MIT-licensed software without warranty, as before. Review the diff of a release the way you would for any
+  third-party dependency, and pin the version you have verified in your own setup.
 
 This is a comprehensive client for Phoenix Channels written for Go applications.
 The goal of this project is to be a reliable, resilient, full-featured client library for connecting to Phoenix
@@ -34,13 +53,13 @@ This module requires Go 1.18 or later.
 
 ## Documentation
 
-API documentation can be viewed via godoc at [API Documentation](https://pkg.go.dev/github.com/nshafer/phx).
+API documentation can be viewed via godoc at [API Documentation](https://pkg.go.dev/github.com/TimeRideVR/phx).
 
 Examples are in [examples/](examples/).
 
 ## Changelog
 
-Please see [Releases](https://github.com/nshafer/phx/releases) on Github.
+Please see [Releases](https://github.com/TimeRideVR/phx/releases) on Github.
 
 ## Features
 
@@ -94,4 +113,7 @@ There is also a simple CLI example for interactively using the library to connec
 ## Not implemented currently:
 
 - Longpoll transport.
-- Binary messages.
+- Binary messages. A binary frame from the server is treated as a read error, so the connection is dropped and
+  re-established: do not use this client against channels that push `{:binary, data}` payloads.
+- Authentication through the `authToken` subprotocol of the Phoenix JavaScript client, and connection parameters that
+  are re-evaluated on every reconnect (a token in the endpoint URL is fixed when `Connect` is called).
