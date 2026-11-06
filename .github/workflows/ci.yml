@@ -42,3 +42,28 @@ jobs:
         with:
           go-version: "stable"
       - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  integration:
+    name: Integration (Phoenix ${{ matrix.phoenix }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        phoenix: ["~> 1.7.0", "~> 1.8.0"]
+    env:
+      PHOENIX_VERSION: ${{ matrix.phoenix }}
+      MIX_INSTALL_DIR: ${{ github.workspace }}/.mix-install
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "stable"
+      - uses: erlef/setup-beam@v1
+        with:
+          otp-version: "27"
+          elixir-version: "1.18"
+      - uses: actions/cache@v4
+        with:
+          path: .mix-install
+          key: mix-install-${{ runner.os }}-otp27-elixir1.18-${{ matrix.phoenix }}-${{ hashFiles('integration/server.exs') }}
+      - run: go test -tags integration -race -count=1 -v ./...

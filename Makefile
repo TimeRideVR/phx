@@ -1,5 +1,12 @@
 default:
-	echo "make publish ver=vX.X.X"
+	echo "make test | make test-integration | make publish ver=vX.X.X"
+
+test:
+	go test -race -count=1 ./...
+
+# Needs elixir on the PATH. PHOENIX_VERSION="~> 1.7.0" tests against another Phoenix version.
+test-integration:
+	go test -tags integration -race -count=1 ./...
 
 publish:
 ifndef ver

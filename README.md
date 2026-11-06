@@ -31,8 +31,9 @@ What that means for you as a consumer:
 
 - Each fix comes with tests that fail without it, and the suite runs with the race detector in CI, together with
   `go vet` and `govulncheck`.
-- The tests run against a small in-process stand-in for a Phoenix server, not against a real Phoenix application, so
-  protocol behaviour is checked against the Phoenix JavaScript client's source and documentation, not live.
+- Besides unit tests against a small in-process stand-in server, [integration tests](#testing) run the client against
+  a real Phoenix server (1.7 and 1.8) in CI. They found a bug the stand-in could not: `OnClose` ran twice after a
+  `Leave`.
 - This is MIT-licensed software without warranty, as before. Review the diff of a release the way you would for any
   third-party dependency, and pin the version you have verified in your own setup.
 
@@ -109,6 +110,21 @@ channel.On("shout", func(payload any) {
 
 There is also a simple CLI example for interactively using the library to connect to any server/channel in
 [examples/cli/cli.go](examples/cli/cli.go).
+
+## Testing
+
+    go test -race ./...                       # unit tests, no extra tooling
+    go test -tags integration -race ./...     # plus integration tests against a real Phoenix server
+
+The integration tests start `integration/server.exs`, a single-file Phoenix application (Bandit, one socket with a
+test channel), as a subprocess. They need `elixir` on the `PATH`; the first run fetches and compiles Phoenix. Set
+`PHOENIX_VERSION` (a Hex requirement, default `~> 1.8`) to test against another Phoenix version. CI runs them against
+`~> 1.7.0` and `~> 1.8.0`.
+
+They cover joining (accepted and rejected), replies and error replies, push timeouts, JSON round trips including
+unicode and 512 KiB payloads, concurrent pushes, broadcasts between clients, callback ordering, `Leave`, a channel
+closed or crashed by the server, a socket dropped by the server, a restarted server, `Disconnect` followed by
+`Connect`, the V1 serializer, a rejected connection and heartbeats.
 
 ## Not implemented currently:
 
