@@ -1,7 +1,7 @@
 package main
 
 import (
-	"github.com/nshafer/phx"
+	"github.com/TimeRideVR/phx"
 	"log"
 	"net/url"
 )

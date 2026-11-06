@@ -9,6 +9,6 @@ endif
 	git tag $(ver)
 	git push origin
 	git push origin --tags
-	GOPROXY=proxy.golang.org go list -m github.com/nshafer/phx@$(ver)
-	http -b https://proxy.golang.org/github.com/nshafer/phx/@v/$(ver).info
-	echo "Go add changelog to Releases: https://github.com/nshafer/phx/releases"
+	GOPROXY=proxy.golang.org go list -m github.com/TimeRideVR/phx@$(ver)
+	http -b https://proxy.golang.org/github.com/TimeRideVR/phx/@v/$(ver).info
+	echo "Go add changelog to Releases: https://github.com/TimeRideVR/phx/releases"

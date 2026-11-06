@@ -1,5 +1,20 @@
 # Phx - A Phoenix Channels client for Go
 
+> **TimeRide fork of [nshafer/phx](https://github.com/nshafer/phx)**, published as `github.com/TimeRideVR/phx`. It
+> carries these fixes until they are merged upstream:
+>
+> - [fix-disconnect-deadlock](https://github.com/TimeRideVR/phx/tree/fix-disconnect-deadlock): Disconnect no longer
+>   deadlocks when it races a reconnect.
+> - [fix-push-binding-race](https://github.com/TimeRideVR/phx/tree/fix-push-binding-race): a push registers its reply
+>   binding before sending, so fast replies are not lost; push state is synchronised.
+> - [ordered-callbacks](https://github.com/TimeRideVR/phx/tree/ordered-callbacks): opt-in `Channel.OrderedCallbacks`
+>   runs a channel's event callbacks one at a time in arrival order.
+> - [fix-heartbeat-race](https://github.com/TimeRideVR/phx/tree/fix-heartbeat-race): no data race or panic between
+>   heartbeat goroutines across reconnects.
+> - [nshafer/phx#6](https://github.com/nshafer/phx/pull/6): fix dangling bindings due to timed out Push calls.
+> - [nshafer/phx#8](https://github.com/nshafer/phx/pull/8): fix "send on closed channel" panic when shutdown races
+>   internal signalling.
+
 [![Go Reference](https://pkg.go.dev/badge/github.com/nshafer/phx.svg)](https://pkg.go.dev/github.com/nshafer/phx) [![Static Badge](https://img.shields.io/badge/changelog-blue)](https://github.com/nshafer/phx/releases)
 
 This is a comprehensive client for Phoenix Channels written for Go applications.
@@ -15,7 +30,7 @@ right at home.
 
 This module requires Go 1.18 or later.
 
-    go get github.com/nshafer/phx
+    go get github.com/TimeRideVR/phx
 
 ## Documentation
 
