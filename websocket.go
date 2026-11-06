@@ -26,7 +26,6 @@ type Websocket struct {
 	reconnect       chan bool
 	closeMsg        chan bool
 	send            chan []byte
-	connectionTries int
 	mu              sync.RWMutex
 	started         bool
 	closing         bool
@@ -128,11 +127,11 @@ func (w *Websocket) Send(msg []byte) error {
 		w.mu.RUnlock()
 		return errors.New("cannot Send when not connected or connecting")
 	}
-	done := w.done
+	done, send := w.done, w.send
 	w.mu.RUnlock()
 
 	select {
-	case w.send <- msg:
+	case send <- msg:
 		return nil
 	case <-done:
 		return errors.New("cannot Send after connection is shut down")
@@ -140,32 +139,46 @@ func (w *Websocket) Send(msg []byte) error {
 }
 
 func (w *Websocket) startup() {
-	w.connectionTries = 0
+	// Every start gets its own channels, and each goroutine below keeps the ones it was started with. A goroutine of
+	// an earlier session that is still winding down must never pick up the channels of the next session, or it
+	// would carry on next to the new goroutines.
+	done := make(chan any)
+	// close, closeMsg and reconnect carry at most one pending request each and are never sent to blockingly, see
+	// signal.
+	closeReq := make(chan bool, 1)
+	closeMsg := make(chan bool, 1)
+	reconnectReq := make(chan bool, 1)
+	send := make(chan []byte, messageQueueLength)
 
 	w.mu.Lock()
-	w.done = make(chan any)
-	// close and reconnect carry at most one pending request each and are never sent to blockingly, see signal.
-	w.close = make(chan bool, 1)
-	w.closeMsg = make(chan bool)
-	w.reconnect = make(chan bool, 1)
-	w.send = make(chan []byte, messageQueueLength)
+	w.done = done
+	w.close = closeReq
+	w.closeMsg = closeMsg
+	w.reconnect = reconnectReq
+	w.send = send
 	w.reconnecting = false
 	w.closing = false
 	w.started = true
 	w.mu.Unlock()
 
-	go w.connectionManager()
-	go w.connectionWriter()
-	go w.connectionReader()
+	go w.connectionManager(done, closeReq, reconnectReq, closeMsg)
+	go w.connectionWriter(done, send)
+	go w.connectionReader(done, closeMsg)
 }
 
 func (w *Websocket) shutdown() {
+	w.shutdownSession(nil)
+}
+
+// shutdownSession ends the current session. With a non-nil done it only does so if that is still the current
+// session's channel, so a goroutine of an earlier session cannot end the session that replaced it.
+func (w *Websocket) shutdownSession(done chan any) {
 	//fmt.Println("shutdown")
 
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	if !w.started {
+	if !w.started || (done != nil && w.done != done) {
 		return
 	}
 
@@ -180,14 +193,52 @@ func (w *Websocket) shutdown() {
 	w.closing = false
 }
 
-func (w *Websocket) dial() error {
+// errSessionEnded is returned by dial when the session it was started for has ended while it was dialing.
+var errSessionEnded = errors.New("websocket session ended")
+
+// dial connects to the server. It stops waiting as soon as done is closed, so a Disconnect does not have to wait for
+// the handshake timeout. gorilla/websocket cannot abort a handshake that is already waiting for the server's answer,
+// so the dial itself is left to finish on its own, and closes its connection if it completes after all.
+func (w *Websocket) dial(done chan any) error {
 	// Dial with a copy, so the timeout never gets written to a Dialer the caller supplied.
 	dialer := *w.Dialer
 	dialer.HandshakeTimeout = w.connectTimeout
-	conn, _, err := dialer.Dial(w.endPoint.String(), w.requestHeader)
-	if err != nil {
-		return err
+	endPoint := w.endPoint.String()
+	requestHeader := w.requestHeader
+
+	type result struct {
+		conn *websocket.Conn
+		err  error
 	}
+	results := make(chan result, 1)
+	go func() {
+		conn, _, err := dialer.Dial(endPoint, requestHeader)
+		results <- result{conn, err}
+	}()
+
+	var conn *websocket.Conn
+	select {
+	case <-done:
+		go func() {
+			if r := <-results; r.conn != nil {
+				_ = r.conn.Close()
+			}
+		}()
+		return errSessionEnded
+	case r := <-results:
+		if r.err != nil {
+			return r.err
+		}
+		conn = r.conn
+	}
+
+	w.mu.Lock()
+	if w.done != done || !w.started {
+		w.mu.Unlock()
+		_ = conn.Close()
+		return errSessionEnded
+	}
+	w.mu.Unlock()
 	//w.socket.Logger.Debugf("Connected conn: %+v\n\n", conn)
 	//w.socket.Logger.Debugf("Connected resp: %+v\n", resp)
 
@@ -198,20 +249,25 @@ func (w *Websocket) dial() error {
 	return nil
 }
 
-func (w *Websocket) closeConn() {
+func (w *Websocket) closeConn(closeMsg <-chan bool) {
 	//fmt.Println("closeConn")
 
 	if conn := w.getConn(); conn != nil {
 		// attempt to gracefully close the connection by sending a close websocket message
 		data := websocket.FormatCloseMessage(websocket.CloseNormalClosure, "")
 		deadline := time.Now().Add(2 * time.Second)
+		// Forget a close frame left over from an earlier handshake that nobody was waiting for any more.
+		select {
+		case <-closeMsg:
+		default:
+		}
 		w.setWaitingForClose(true)
 		err := conn.WriteControl(websocket.CloseMessage, data, deadline)
 		if err == nil {
 			// Wait for a close message to be received by `connectionReader`, or time out after 2 seconds
 			w.setWaitingForClose(true)
 			select {
-			case <-w.closeMsg:
+			case <-closeMsg:
 			case <-time.After(2 * time.Second):
 			}
 		}
@@ -263,31 +319,35 @@ func (w *Websocket) readFromConn() (*websocket.Conn, []byte, error) {
 	return conn, data, nil
 }
 
-func (w *Websocket) connectionManager() {
+func (w *Websocket) connectionManager(done chan any, closeReq, reconnectReq, closeMsg chan bool) {
 	//fmt.Println("connectionManager started")
 	//defer fmt.Println("connectionManager stopped")
 
 	// closedByReconnect is set when a reconnect has closed the connection and no new one has been dialed since. A
 	// Disconnect that arrived during that reconnect must not close (and report closing) the same connection again.
 	closedByReconnect := false
+	connectionTries := 0
 
 	for {
 		// Check if we have been told to finish
 		select {
-		case <-w.done:
+		case <-done:
 			return
 		default:
 		}
 
 		if !w.isClosing() && !w.connIsSet() {
-			err := w.dial()
+			err := w.dial(done)
 			if err != nil {
+				if errors.Is(err, errSessionEnded) {
+					return
+				}
 				w.Handler.onConnError(err)
 				w.setReconnecting(true)
-				w.connectionTries++
-				delay := w.Handler.reconnectAfter(w.connectionTries)
+				connectionTries++
+				delay := w.Handler.reconnectAfter(connectionTries)
 				select {
-				case <-w.done:
+				case <-done:
 				case <-time.After(delay):
 				}
 				continue
@@ -296,21 +356,21 @@ func (w *Websocket) connectionManager() {
 		}
 
 		select {
-		case <-w.done:
+		case <-done:
 			return
-		case <-w.close:
+		case <-closeReq:
 			if !closedByReconnect {
-				w.closeConn()
+				w.closeConn(closeMsg)
 			}
-			w.shutdown()
-		case <-w.reconnect:
-			w.closeConn()
+			w.shutdownSession(done)
+		case <-reconnectReq:
+			w.closeConn(closeMsg)
 			closedByReconnect = true
 		}
 	}
 }
 
-func (w *Websocket) connectionWriter() {
+func (w *Websocket) connectionWriter(done chan any, send chan []byte) {
 	//fmt.Println("connectionWriter started")
 	//defer fmt.Println("connectionWriter stopped")
 
@@ -321,7 +381,7 @@ func (w *Websocket) connectionWriter() {
 	for {
 		// Check if we have been told to finish
 		select {
-		case <-w.done:
+		case <-done:
 			return
 		default:
 		}
@@ -333,9 +393,9 @@ func (w *Websocket) connectionWriter() {
 
 		if pending == nil {
 			select {
-			case <-w.done:
+			case <-done:
 				return
-			case pending = <-w.send:
+			case pending = <-send:
 			}
 		}
 
@@ -368,14 +428,14 @@ func (w *Websocket) connectionWriter() {
 	}
 }
 
-func (w *Websocket) connectionReader() {
+func (w *Websocket) connectionReader(done chan any, closeMsg chan bool) {
 	//fmt.Println("connectionReader started")
 	//defer fmt.Println("connectionReader stopped")
 
 	for {
 		// Check if we have been told to finish
 		select {
-		case <-w.done:
+		case <-done:
 			//fmt.Println("connectionReader stopping")
 			return
 		default:
@@ -392,12 +452,22 @@ func (w *Websocket) connectionReader() {
 
 		// If there were any errors, tell the connectionManager to reconnect
 		if err != nil {
+			// The error of a session that has ended is of no interest to the session that replaced it.
+			select {
+			case <-done:
+				if conn != nil {
+					_ = conn.Close()
+				}
+				return
+			default:
+			}
+
 			//fmt.Printf("read error %e %v\n", err, err)
 			if websocket.IsCloseError(err, 1000) && w.isWaitingForClose() {
 				// tell the connectionManager that we got the close message
 				select {
 				case w.closeMsg <- true:
-				case <-w.done:
+				case <-done:
 					return
 				}
 			} else {
